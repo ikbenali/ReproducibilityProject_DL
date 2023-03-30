@@ -58,7 +58,7 @@ class Poisson1D:
     def compute_gradient(self, u, x, t=None):
             
         ux   = torch.autograd.grad(u,  x, grad_outputs=torch.ones_like(u),  retain_graph=True, create_graph=True)[0]
-        uxx  = torch.autograd.grad(ux, x, grad_outputs=torch.ones_like(ux), create_graph=True)[0]
+        uxx  = torch.autograd.grad(ux, x, grad_outputs=torch.ones_like(ux), retain_graph=True, create_graph=True)[0]
 
         return torch.hstack([u, ux, uxx]).T
 

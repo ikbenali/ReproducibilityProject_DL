@@ -5,9 +5,9 @@ import matplotlib.pyplot as plt
 
 def plot_NTK(net):
 
-    eig_K_plot    = np.real(net.lambda_K.detach().cpu().numpy())
-    eig_K_uu_plot = np.real(net.lambda_uu.detach().cpu().numpy())
-    eig_K_rr_plot = np.real(net.lambda_rr.detach().cpu().numpy())
+    eig_K_plot    = np.sort(np.real(net.lambda_K.detach().cpu().numpy()))[::-1]
+    eig_K_uu_plot = np.sort(np.real(net.lambda_uu.detach().cpu().numpy()))[::-1]
+    eig_K_rr_plot = np.sort(np.real(net.lambda_rr.detach().cpu().numpy()))[::-1]
 
     ### PLOT Eigenvalue of NTK matrices
     fig, axs = plt.subplots(1,3, figsize=(23,6))
@@ -18,6 +18,7 @@ def plot_NTK(net):
 
     for ax in axs:
         ax.legend()
-        ax.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
+        # ax.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
+        ax.set_yscale('log')
         ax.set_ylabel(r'$\lambda$')
         ax.set_xlabel(r'$Index$')

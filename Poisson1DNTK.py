@@ -29,7 +29,6 @@ elif torch.cuda.is_available():
 else:
     device = torch.device('cpu')
 
-
 ### Define Poisson1D Exact, forcing function and boundary condition
 def f_u_exact(a,x):
     """ 
@@ -86,8 +85,8 @@ rand_sampler = RandomSampler(X, replacement=True)
 XTrain       = DataLoader(X, Nr ,sampler=rand_sampler)
 
 size          = len(XTrain.dataset)
-learning_rate = 1e-4
-epochs        = int(10e3)
+learning_rate = 1e-5
+epochs        = int(10000)
 
 # net parameters
 input_size  = 1
@@ -111,13 +110,14 @@ NTK(net, x, x_prime)
 
 # Plot initial 
 plot_NTK(net)
+plt.show()
 
 ### TRAIN LOOP
 train_losses = []
 
 # NTK computation
 compute_NTK          = True
-compute_NTK_interval = 1
+compute_NTK_interval = 10
 store_NTK    = True
 eig_K        = []
 eig_K_uu     = []
@@ -168,7 +168,7 @@ for epoch in range(epochs+1):
             net.backward(x, U, fx, gx)
             epoch_loss += net.loss.item()
             if i == len(XTrain) - 1:
-                x_prime  = x.detach().clone().requires_grad_()
+                x_prime  = x
 
         # Do optimisation step
         scaler.scale(net.loss).backward()
@@ -182,8 +182,6 @@ for epoch in range(epochs+1):
         if (epoch % compute_NTK_interval == 0 or epoch == epochs - 1) and compute_NTK:
 
             net.eval()
-
-            x_ = x.detach().clone().requires_grad_()
             
             NTK(net, x, x_prime)
 
@@ -199,13 +197,15 @@ for epoch in range(epochs+1):
 ### END training loop
 
 # reformat eigenvalue of NTK matrices
-if compute_NTK:
+if compute_NTK and len(eig_K) != 0:
     eig_K       = torch.stack(eig_K, dim=-1)
     eig_K_uu    = torch.stack(eig_K_uu, dim=-1)
     eig_K_rr    = torch.stack(eig_K_rr, dim=-1)
 
 #%% 
 ### Plot Results
+
+net.eval()
 
 xplot = torch.linspace(X_0, X_N, NX, dtype=dtype).view(-1,1).to(device)
 
