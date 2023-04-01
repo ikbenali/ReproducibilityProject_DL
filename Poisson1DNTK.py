@@ -62,7 +62,7 @@ def g_x(x, xb):
     return ub
 
 ### Setup PDE Equation
-a   = 4
+a   = 2
 PDE = Poisson1D(a)
 
 # Define PDE domain
@@ -84,50 +84,53 @@ Nb      = 100
 rand_sampler = RandomSampler(X, replacement=True)
 XTrain       = DataLoader(X, Nr ,sampler=rand_sampler)
 
-size          = len(XTrain.dataset)
-learning_rate = 1e-5
-epochs        = int(10000)
+# Logging parameters
+log_NTK            = True
+log_parameters     = True
 
 # net parameters
 input_size  = 1
 output_size = 1
-neurons     = 100
-net         = PINN(input_size, output_size, neurons, PDE, dtype, device); 
+neurons     = 10
+net         = PINN(input_size, output_size, neurons, PDE, dtype, device, log_parameters, log_NTK);
 net.to(device)
+
+# Training parameters
+size          = len(XTrain.dataset)
+learning_rate = 1e-3
+epochs        = int(10000)
 
 loss_fn   = nn.MSELoss()
 optimizer = optim.SGD(net.parameters(), learning_rate)
 # optimizer = optim.Adam(net.parameters(), learning_rate)
 
+##################### Train network
 
-### Observe initial estimation of NTK Matrix
+### NTK computation settings
+compute_NTK          = True
+compute_NTK_interval = 10
+
+## Observe initial estimation of NTK Matrix
 net.eval()
-
 x       = next(iter(XTrain))
 x_prime = next(iter(XTrain))
-
-NTK(net, x, x_prime)
+net.NTK(x, x_prime)
+net.log_NTK(0)
 
 # Plot initial 
 plot_NTK(net)
 plt.show()
 
-### TRAIN LOOP
+#### Train loop
 train_losses = []
-
-# NTK computation
-compute_NTK          = True
-compute_NTK_interval = 10
-store_NTK    = True
-eig_K        = []
-eig_K_uu     = []
-eig_K_rr     = []
 
 # Auto Mixed Precision settings
 use_amp = False
 scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
 
 for epoch in range(epochs+1):
+
+    net.log_parameters(epoch)
     net.train()
 
     epoch_loss   = 0.0
@@ -183,12 +186,10 @@ for epoch in range(epochs+1):
 
             net.eval()
             
-            NTK(net, x, x_prime)
+            net.NTK(x, x_prime)
 
-            if store_NTK:
-                eig_K.append(net.lambda_K)
-                eig_K_uu.append(net.lambda_uu)
-                eig_K_rr.append(net.lambda_rr)
+            if log_NTK:
+                net.log_NTK(epoch)
 
     train_losses.append(epoch_loss / len(XTrain))
     
@@ -196,11 +197,6 @@ for epoch in range(epochs+1):
         print(f"Epoch: {epoch:4d}     loss: {train_losses[-1]:5f}")
 ### END training loop
 
-# reformat eigenvalue of NTK matrices
-if compute_NTK and len(eig_K) != 0:
-    eig_K       = torch.stack(eig_K, dim=-1)
-    eig_K_uu    = torch.stack(eig_K_uu, dim=-1)
-    eig_K_rr    = torch.stack(eig_K_rr, dim=-1)
 
 #%% 
 ### Plot Results
@@ -217,20 +213,31 @@ xplot   = xplot.cpu().detach().numpy()
 u_exact = u_exact.cpu().detach().numpy()
 u_pred  = u_pred.cpu().detach().numpy()
 
-### PLOT Prediction accuracy and training loss
+pointWise_err = u_exact - u_pred
 
-fig, axs = plt.subplots(1,2, figsize=(23,6))
+print(pointWise_err.shape)
 
-# predict
+### PLOT Prediction and training loss
+
+fig, axs = plt.subplots(1,2, figsize=(24,6))
+
+# predict and error plot
 axs[0].plot(xplot, u_exact, label='$u_{exact}$')
 axs[0].plot(xplot, u_pred, label='$u_{pred}$')
 axs[0].legend()
 axs[0].set_ylabel(r'$u$')
 axs[0].set_xlabel(r'$x$')
 
+axs[1].plot(xplot, pointWise_err)
+axs[1].set_ylabel('Point-wise error')
+axs[1].set_xlabel(r'$x$')
 
-axs[1].semilogy(train_losses)
-axs[1].set_ylabel(r'loss per epoch')
-axs[1].set_xlabel(r'$Epoch$')
+# train losses plot
+fig,axs = plt.subplots(1,1, figsize=(12,6))
+axs.semilogy(train_losses)
+axs.set_ylabel(r'loss per epoch')
+axs.set_xlabel(r'$Epoch$')
 
 plt.show()
+
+# %%
