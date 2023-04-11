@@ -5,31 +5,25 @@ Reproducbility project
 
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 # Pytorch
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
-
 import torchinfo
 
 ### Own modules
 from src.PDE import ViscidBurger1D
 from src.PINN import PINN
-from src.NTK_helper import compute_convergence_rate, compute_NTK_diff, compute_parameter_diff
 from src.plotFunctions import plot_results2D, plot_NTK, plot_param_ntk_diff, plot_NTK_change, plot_convergence_rate
-
-# import nvidia_dlprof_pytorch_nvtx
-# nvidia_dlprof_pytorch_nvtx.init()
-
-import time
 
 ### Set dtype and device to be used
 dtype = torch.float32
 
-save_model      = True
 train_model     = True
+save_model      = True
 model_name      = 'ViscidBurger1D'
 
 if torch.backends.mps.is_available():
@@ -39,7 +33,7 @@ elif torch.cuda.is_available():
 else:
     device = torch.device('cpu')
 
-### Define Poisson1D Exact, forcing function and boundary condition
+### Define Viscid1D Exact, forcing function and boundary condition
 def f_u_exact(x, t):
     """ 
     Exact solution
@@ -98,26 +92,39 @@ t_ic     = T_0
 
 X_bc     = [X_0, X_N]
 
-
 # Number of points for interior, boundary and inital condition
-NX      = int(2000)
-Nb = Ni = int(100)
+NX      = int(5000)
+Nb = Ni = int(500)
 
-Xr = torch.linspace(X_0, X_N, NX, dtype=dtype, device=device, requires_grad=True).view(-1,1)
-T  = torch.linspace(T_0, T_N, NX, dtype=dtype, device=device, requires_grad=True).view(-1,1)
+from scipy.stats import qmc
+def latin_hypercube(X_0, X_N, N):
+    sampler = qmc.LatinHypercube(d=1)
+    sample = sampler.random(n=N).reshape(-1,1)
+    sample = qmc.scale(sample, X_0, X_N)
 
-Xb = torch.cat( [-1*torch.ones((Nb//2,1), dtype=dtype), torch.ones((Nb//2,1), dtype=dtype)] ).to(device).requires_grad_(True)
-Tb = torch.linspace(T_0, T_N, Nb, dtype=dtype, device=device, requires_grad=True).view(-1,1)
+    if dtype == torch.float32:
+        sample = sample.astype(np.float32)
 
-Xi = torch.linspace(X_0, X_N, Ni, dtype=dtype, device=device, requires_grad=True).view(-1,1)
-Ti = torch.zeros((Ni, 1), dtype=dtype, device= device, requires_grad=True)
+    return torch.from_numpy(sample).requires_grad_(True).to(device)
 
+Xr = latin_hypercube(X_0, X_N, NX)
+T  = latin_hypercube(T_0, T_N, NX)
+
+Xb = torch.cat( [-1*torch.ones((Nb//2, 1), dtype=dtype), torch.ones((Nb//2, 1), dtype=dtype)] ).to(device).requires_grad_(True)
+Tb = latin_hypercube(T_0, T_N, Nb)
+
+Xi = latin_hypercube(X_0, X_N, Ni)
+Ti = latin_hypercube(T_0, T_N, Ni)
+
+print(Xb.shape, Tb.shape, Xi.shape, Ti.shape)
 X_r     = torch.hstack([Xr, T])
-X_bc_ic =  torch.hstack( [Xb, Tb, Xi, Ti] )
+X_bc_ic = torch.hstack([Xb, Tb, Xi, Ti] )
 
 # Dataset preparation
-Br = 100
-Bb = Bi = 100
+
+# BATCH SIZES HAVE TO BE SIMILAIR! 
+Br = 500
+Bb = Bi = 500
 rand_sampler1 = RandomSampler(X_r, replacement=True)
 XTrain        = DataLoader(X_r, Br ,sampler=rand_sampler1)
 
@@ -127,64 +134,40 @@ XTrain_bc_ic  = DataLoader(X_bc_ic, Bb, sampler=rand_sampler2)
 training_batches    = len(XTrain)
 training_batches_xb = len(XTrain_bc_ic)
 
+### NTK computation settings
+compute_NTK          = True
+compute_NTK_interval = 100
+
 # Logging parameters
 log_NTK            = True
 log_parameters     = True
 
-# net parameters
+# Create network
 input_size  = 2
 output_size = 1
 neurons     = [20, 20, 20, 20, 20, 20, 20, 20]
+# neurons     = [100]
 net         = PINN(input_size, output_size, neurons, PDE, dtype, device, log_parameters, log_NTK)
 net.to(device)
 
-# torchinfo.summary(net, input_size=(Br, 2))
+torchinfo.summary(net, input_size=(Br, 2), device=device)
 
 # Training parameters
-learning_rate = 1e-5
-epochs        = int(1)
-optimizer = optim.SGD(net.parameters(), learning_rate)
-# optimizer = optim.Adam(net.parameters(), learning_rate)
+learning_rate = 1e-3
+epochs        = int(10e3)
+# optimizer = optim.SGD
+optimizer = optim.Adam
 # optimizer = optim.LBFGS(net.parameters(), learning_rate)
 
 ##################### Train network
 
-### NTK computation settings
-compute_NTK          = True
-compute_NTK_interval = 1
-
-# Observe initial NTK matrix
-epoch = 0
-if epoch == 0 and compute_NTK:
-    ## Observe initial estimation of NTK Matrix
-    net.eval()
-    x       = next(iter(XTrain))
-    x_prime = next(iter(XTrain))
-
-    x_bc_ic         = next(iter(XTrain_bc_ic))
-    x_bc_ic_prime   = next(iter(XTrain_bc_ic))
-
-    xb = x_bc_ic[:,[0,1]].view(-1,2)
-    xi = x_bc_ic[:,[2,3]].view(-1,2)
-
-    xb_prime = x_bc_ic_prime[:,[0,1]].view(-1,2)
-    xi_prime = x_bc_ic_prime[:,[2,3]].view(-1,2)
-
-    x = torch.stack([x, xb, xi], dim=0)
-    x_prime = torch.stack([x_prime, xb_prime, xi_prime], dim=0)
-    net.NTK(x, x_prime)
-
-    if log_NTK:
-        net.log_NTK(epoch)
-
-    # reset lambda
-    net.lambda_adaptation = [1., 1., 1.]
-
 ### Adapation algorithm
-use_adaptation_algorithm = True
+use_adaptation_algorithm = False
 
 # Auto Mixed Precision settings
 use_amp = True
+if device == torch.device('cpu'):
+    use_amp = False
 scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
 
 ### Model save settings
@@ -193,18 +176,56 @@ if use_adaptation_algorithm:
 else:
     model_adaption = ''
 
-file_name = f'{model_name}_{epochs}{model_adaption}'
+if optimizer == optim.SGD:
+    opt = 'SGD'
+elif optimizer == optim.Adam:
+    opt = 'Adam'
+
+file_name = f'{model_name}_Epoch={epochs}_Optimizer={opt}{model_adaption}'
 path      = './output/models/'
 pathfile  = path+file_name
 
-#### Train loop
+#### TRAIN MODEL
 train_losses = []
+optimizer = optimizer(net.parameters(), learning_rate)
 
 if train_model:
+    ## Observe initial estimation of NTK Matrix
+    if compute_NTK:
+        net.eval()
+
+        epoch = 0
+        x       = next(iter(XTrain))
+        x_prime = next(iter(XTrain))
+
+        x_bc_ic         = next(iter(XTrain_bc_ic))
+        x_bc_ic_prime   = next(iter(XTrain_bc_ic))
+
+        xb          = x_bc_ic[:,[0,1]].view(-1,2);          xi          = x_bc_ic[:,[2,3]].view(-1,2)
+        xb_prime    = x_bc_ic_prime[:,[0,1]].view(-1,2);    xi_prime    = x_bc_ic_prime[:,[2,3]].view(-1,2)
+        
+        x.to(device)
+        xb.to(device);          xi.to(device)
+        xb_prime.to(device);    x_prime.to(device)
+
+        x       = torch.stack([x, xb, xi], dim=0)
+        x_prime = torch.stack([x_prime, xb_prime, xi_prime], dim=0)
+
+        net.NTK(x, x_prime)
+
+        if log_NTK:
+            net.log_NTK(epoch)
+
+        # reset lambda
+        # net.lambda_adaptation = [1., 1., 1.]
+
+    # Training loop
     for epoch in range(epochs+1):
 
         # log parameters and set in training mode
-        net.log_parameters(epoch)
+        if log_parameters:
+            net.log_parameters(epoch)
+
         net.train()
 
         epoch_loss   = 0.0
@@ -281,6 +302,7 @@ if train_model:
 
                 if log_NTK:
                     net.log_NTK(epoch)
+                    net.save_log(pathfile)
 
         train_losses.append(epoch_loss / len(XTrain))
         
@@ -292,13 +314,25 @@ if train_model:
     if save_model:
         net.save_model(pathfile)
         net.save_log(pathfile)
+        with open(f'{pathfile}.npy', 'wb') as f:
+            np.save(f, np.array(train_losses))
 
 ######### Plot results
-net.read_model(pathfile)
-net.read_log(pathfile)
 
-### Plot reslts
-N = 501
+read_model = True
+
+if read_model:
+    net.read_model(pathfile)
+    net.read_log(pathfile)
+    with open(f'{pathfile}.npy', 'rb') as f:
+        train_losses = np.load(f)
+
+path      = './output/figures/'
+pathfile  = path+file_name
+Path(path).mkdir(parents=True, exist_ok=True)
+
+net.eval()
+N = int(1e3) + 1
 
 xplot = torch.linspace(X_0, X_N, N, dtype=dtype, device=device).view(-1,1)
 tplot = torch.linspace(T_0, T_N, N, dtype=dtype, device=device).view(-1,1)
@@ -312,7 +346,6 @@ for t_i in tplot:
     u_pred.append( net(torch.hstack((xplot, t_i))) )
 u_pred  = torch.hstack(u_pred)
 
-
 xplot   = xplot.cpu().detach().numpy()
 tplot   = tplot.cpu().detach().numpy()
 u_pred  = u_pred.cpu().detach().numpy()
@@ -321,21 +354,28 @@ u_pred  = u_pred.cpu().detach().numpy()
 xplot = np.hstack([xplot, tplot])
 T_idxs = [0.25, 0.5, 0.75]
 plot_results2D(xplot, u_pred, T_idxs, train_losses )
+plt.savefig(pathfile+'_plot_2D')
 
-# Plot 2 - Parameter and ntk difference
-fig2, axs2 = plt.subplots(1,2, figsize=(18,6))
-plot_param_ntk_diff(net, fig2, axs2)
+if log_NTK and log_parameters:
+    # Plot 2 - Parameter and ntk difference
+    fig2, axs2 = plt.subplots(1,2, figsize=(18,6))
+    plot_param_ntk_diff(net, fig2, axs2)
+    plt.savefig(pathfile+'_plot_param_ntk_diff')
 
-# Plot 3 - Plot all NTK matrices
-fig3, axs3 = plt.subplots(1,4, figsize=(18,6))
-plot_NTK(net, fig3, axs3)
+    # Plot 3 - Plot all NTK matrices
+    fig3, axs3 = plt.subplots(1,4, figsize=(18,6))
+    plot_NTK(net, fig3, axs3)
+    plt.savefig(pathfile+'_plot_NTK')
 
-# Plot 4 - NTK matrix K change
-fig4, axs4 = plt.subplots(1,1)
-plot_NTK_change(net, fig4, axs4)
+    # Plot 4 - NTK matrix K change
+    fig4, axs4 = plt.subplots(1,1)
+    plot_NTK_change(net, fig4, axs4)
+    plt.savefig(pathfile+'_plot_NTK_change')
 
-# Plot 5 - Convergence rate for all matrices
-fig5, axs5 = plt.subplots(1,1)
-plot_convergence_rate(net, fig5, axs5)
+    # Plot 5 - Convergence rate for all matrices
+    fig5, axs5 = plt.subplots(1,1)
+    plot_convergence_rate(net, fig5, axs5)
+    plt.savefig(pathfile+'_plot_convergence_rate')
+
 
 plt.show()

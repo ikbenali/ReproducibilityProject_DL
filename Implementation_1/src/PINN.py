@@ -1,9 +1,10 @@
 
 import torch
+import numpy as np
 import torch.nn as nn
 
-import orjson
-import numpy as np
+import os
+import h5py
 
 
 class PINN(nn.Module):
@@ -20,14 +21,17 @@ class PINN(nn.Module):
 
         # Define layers of network
         self.input_layer      = nn.Linear(input_size, self.neurons[0], dtype=dtype,  device=device)
-        self.layers = [self.input_layer]
+        layers = [self.input_layer]
         if len(neurons) > 1:
             for i, neuron in enumerate(self.neurons[1:]):
                 layer = nn.Linear(self.neurons[i-1], neuron, dtype=dtype, device=device)
-                self.layers.append(layer)
+                layers.append(layer)
 
         self.output_layer     = nn.Linear(self.neurons[-1], output_size, dtype=dtype, device=device)
-        self.layers.append(self.output_layer)
+        layers.append(self.output_layer)
+
+        self.layers = nn.ModuleList(layers)
+        self.n_layers = len(self.layers)
         
         # single activation function for whole network
         self.activation = nn.Tanh()      
@@ -82,11 +86,11 @@ class PINN(nn.Module):
         self.network_parameters_log[epoch] = {'weight': weights, 'bias':bias}
 
     def forward(self, x):
-        for layer in self.layers[:-1]:
-            x = layer(x)
-            x = self.activation(x)
 
-        x = self.layers[-1](x)
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i < self.n_layers - 1:
+                x = self.activation(x)
 
         return x
     
@@ -100,8 +104,6 @@ class PINN(nn.Module):
         elif X.shape[0] == 2:
             xr = X[0].T
             xb = X[1].T
-        else:
-            xr = xb = X
 
         if U.shape[0] == 3:
             U_x = U[0]
@@ -110,9 +112,6 @@ class PINN(nn.Module):
         elif U.shape[0] == 2:
             U_x  = U[0]
             U_xb = U[1]
-        else:
-            U_x = U
-            U_b = U
 
         loss = []
 
@@ -158,9 +157,10 @@ class PINN(nn.Module):
         dtype  = self.dtype
 
         #### forward pass points with current parameters and compute gradients w.r.t points
-        y   = self(x)
+        y   = self.forward(x)
         y_x = grad_fn(y, x)
-        #### Compute LHS of PDE equation or condition and set the rhs to zero
+        
+        #### Compute LHS of PDE equation and set the rhs to zero
         rhs = torch.zeros((x.shape[0],1), dtype=dtype, device=device).T
         lhs = residual_fn(x.T, y_x, rhs)
 
@@ -168,7 +168,7 @@ class PINN(nn.Module):
         J_y = []
         for i in range(len(x)):
             row = flatten_grad(torch.autograd.grad(lhs[:,i], self.parameters(), grad_outputs=torch.ones_like(lhs[:,i]), retain_graph=True))
-            J_y.append(row)
+            J_y.append(row.detach().clone())
         # End jacobian computation over parameters
 
         return torch.vstack(J_y)
@@ -195,6 +195,7 @@ class PINN(nn.Module):
             J_r2 = self.compute_jacobian(xr2, self.compute_pde_gradient, self.pde_residual)
 
             # compute NTK matrix for PDE residual
+
             self.Krr            = torch.matmul(J_r1, J_r2.T)
             self.lambda_Krr, _  = torch.linalg.eig(self.Krr)
         # endif
@@ -204,12 +205,13 @@ class PINN(nn.Module):
             BC_K = True   
 
             J_u1 = self.compute_jacobian(xb1, self.compute_pde_gradient, self.bc_residual)
-            J_u2 = self.compute_jacobian(xb2, self.compute_pde_gradient, self.bc_residual)  
+            J_u2 = self.compute_jacobian(xb2, self.compute_pde_gradient, self.bc_residual) 
 
             # Compute NTK matrix for PDE boundary condition
             self.Kuu            = torch.matmul(J_u1, J_u2.T)
             self.lambda_Kuu, _  = torch.linalg.eig(self.Kuu)
-        
+        # endif
+
         if hasattr(self, 'ic_residual'):
             IC_K = True
 
@@ -219,20 +221,21 @@ class PINN(nn.Module):
             # Compute NTK matrix for PDE boundary condition
             self.Kii            = torch.matmul(J_i1, J_i2.T)
             self.lambda_Kii, _  = torch.linalg.eig(self.Kii)
+        # endif
 
         if PDE_K and BC_K and IC_K:
             K1 = torch.vstack((J_u1,   J_r1, J_i1))
             K2 = torch.hstack((J_u2.T, J_r2.T, J_i2.T))
             self.K = torch.matmul(K1, K2)
             self.lambda_K,_ = torch.linalg.eig(self.K)
-
         elif PDE_K and BC_K:
             K1 = torch.vstack((J_u1,   J_r1))
             K2 = torch.hstack((J_u2.T, J_r2.T))
 
             self.K = torch.matmul(K1, K2)
 
-            self.lambda_K,_ = torch.linalg.eig(self.K)
+            self.lambda_K, _ = torch.linalg.eig(self.K)
+        # endif
 
         # update adaption terms
         K_trace = torch.trace(self.K)
@@ -252,16 +255,16 @@ class PINN(nn.Module):
         NTK_eigenvalues = []
         if hasattr(self, 'K'):
             NTK_matrix.append(self.K)
-            NTK_eigenvalues.append(self.lambda_K)
+            NTK_eigenvalues.append(self.lambda_K.detach())
         if hasattr(self, 'Krr'):
             NTK_matrix.append(self.Krr)
-            NTK_eigenvalues.append(self.lambda_Krr)
+            NTK_eigenvalues.append(self.lambda_Krr.detach())
         if hasattr(self, 'Kuu'):
             NTK_matrix.append(self.Kuu)
-            NTK_eigenvalues.append(self.lambda_Kuu)
+            NTK_eigenvalues.append(self.lambda_Kuu.detach())
         if hasattr(self, 'Kii'):
             NTK_matrix.append(self.Kii)
-            NTK_eigenvalues.append(self.lambda_Kii)
+            NTK_eigenvalues.append(self.lambda_Kii.detach())
 
         self.NTK_log[epoch] = {'NTK_matrix': NTK_matrix, 
                                'NTK_eigenvalues': NTK_eigenvalues}
@@ -269,75 +272,72 @@ class PINN(nn.Module):
     
     def save_model(self, pathfile):
         torch.save(self.state_dict(), f'{pathfile}.pt')
-    
-    def save_log(self, pathfile):
-        def default(obj):  
-            if obj.dtype == np.complex64:
-                return {'complex': np.vstack([obj.real, obj.imag])}
-
-        with open(pathfile+'.json', 'wb') as f:
-            logs = {"network_parameter_log": log2json(self.network_parameters_log), "NTK_log": log2json(self.NTK_log)}
-            f.write(orjson.dumps(logs, default=default, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS))
 
     def read_model(self, pathfile):
         self.load_state_dict(torch.load(f'{pathfile}.pt'))
 
-    def read_log(self, pathfile):
-        with open(pathfile+'.json', 'rb') as f:
-            logs = orjson.loads(f.read())
+    def save_log(self, pathfile, reset=True):
 
-        self.network_parameters_log = json2log(logs['network_parameter_log'], self.device)
-        self.NTK_log                = json2log(logs['NTK_log'], self.device)
+        filename  = f'{pathfile}.hdf5'
 
-def log2json(log):
-    new_log = {}
-    for key in log.keys():
-        value = log[key]
-        if isinstance(value, dict):
-            value = log2json(value)
-        elif isinstance(value, list):
-            new_list = []
-            for item in value:
-                if isinstance(item, torch.Tensor):
-                    new_item = item.detach().cpu().numpy()
-                    if new_item.dtype == np.complex64:
-                        new_item = {'complex': np.vstack([new_item.real, new_item.imag])}
-                    new_list.append(new_item)
-            value = new_list
-        elif isinstance(value, torch.Tensor):
-            value = value.detach().cpu().numpy()
-        new_log[key] = value
-    return new_log
+        if os.path.isfile(filename):
+            f = h5py.File(filename, mode='a')
+        else:
+            f = h5py.File(filename, mode='w')
 
-def json2log(json, device='cpu'):
-    log = {}
-    for key in json.keys():
-        value = json[key]
-        if isinstance(value, dict):
-            value = json2log(value)
-        elif isinstance(value, list):
-            new_list = []
-            i = 0
-            for item in value:
-                if isinstance(item, dict):
-                    if 'complex' in item.keys():
-                        real = torch.Tensor(item['complex'][0]).view(-1,1)
-                        imag = torch.Tensor(item['complex'][1]).view(-1,1)
-                        new_item = torch.view_as_complex(torch.hstack([real, imag]))
-                elif isinstance(item, list):
-                    # check for nested list:
-                    if isinstance(item[0], list):
-                        new_item = torch.stack([torch.Tensor(item_i) for item_i in item], dim=0)
+        logs = [self.network_parameters_log, self.NTK_log]
+
+        for log in logs:
+            for epoch in log:
+                for group in log[epoch]:
+                    grp_name = f'{str(epoch)}/{group}'
+                    if grp_name not in f:
+                        grp = f.create_group(grp_name)
                     else:
-                        new_item = torch.Tensor(item)
-                elif isinstance(item, np.ndarray):
-                    new_item = torch.Tensor(item)
-                new_list.append(new_item)
-                i+= 1
-            value = new_list
-        elif isinstance(value, np.ndarray):
-            value = torch.Tensor(value, device=self.device)
-        if key.isdigit():
-            key = int(key)
-        log[key] = value
-    return log
+                        grp = f[grp_name]
+                    for i, item in enumerate(log[epoch][group]):
+                        new_item = item.detach().cpu().numpy()
+                        if str(i) not in grp:
+                            grp.create_dataset(str(i), data=new_item)
+                        else:
+                            grp[str(i)][:] = new_item
+        if reset:
+            self.network_parameters_log = {}
+            self.NTK_log = {}
+
+        f.close()
+
+
+    def read_log(self, pathfile):
+        # read file
+        f = h5py.File(f'{pathfile}.hdf5', mode='r')
+
+        epochs  = []
+        NTK_log = {}
+        network_parameters_log = {}
+
+        for epoch in f:
+            for group in f[epoch]:
+                row = []
+                for array in f[epoch][group]:
+                    value = torch.from_numpy(f[epoch][group][array][:]).clone()
+                    row.append(value.to(self.device))
+                if group == "weight":
+                    weights = row
+                elif group == "bias":
+                    bias = row 
+                elif group == "NTK_matrix":
+                    NTK_matrix = row
+                elif group == "NTK_eigenvalues":
+                    NTK_eigenvalues = row
+                    
+            epoch = int(epoch)
+            epochs.append(epoch)
+            network_parameters_log[epoch] = {'weight': weights, 'bias':bias}
+            NTK_log[epoch] = {'NTK_matrix': NTK_matrix, 
+                                        'NTK_eigenvalues': NTK_eigenvalues}
+        epochs.sort()
+        self.network_parameters_log = {epoch_i: network_parameters_log[epoch_i] for epoch_i in epochs}
+        self.NTK_log                = {epoch_i: NTK_log[epoch_i] for epoch_i in epochs}
+
+        f.close()

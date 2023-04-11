@@ -3,9 +3,9 @@ import torch
 def compute_norm(matrix):
     # norm = torch.sqrt(torch.sum(matrix**2))
     if len(matrix.shape) > 1:
-        norm = torch.linalg.matrix_norm(matrix, ord=2)
+        norm = torch.linalg.matrix_norm(matrix)
     else:
-        norm = torch.linalg.norm(matrix, ord=2)
+        norm = torch.linalg.norm(matrix)
     return norm
 
 def compute_parameter_diff(net): 
@@ -40,10 +40,12 @@ def compute_NTK_diff(net):
     NTK_diff   = torch.zeros((n,1), dtype=dtype, device=device)
 
     K0 = net.NTK_log[0]['NTK_matrix'][0]
+    K0_norm = torch.linalg.matrix_norm(K0)
 
     for i,epoch in enumerate(NTK_epochs[1:]):
         K   = net.NTK_log[epoch]['NTK_matrix'][0]
-        diff = torch.linalg.matrix_norm(K - K0, ord=2) / torch.linalg.matrix_norm(K0, ord=2)
+        K_diff = K - K0 
+        diff = torch.linalg.matrix_norm(K_diff) / K0_norm
         NTK_diff[i+1] = diff
 
     return NTK_epochs, NTK_diff
