@@ -34,7 +34,7 @@ class Poisson1D:
         g   = sm.symbols('g', cls=sm.Function)(x)
 
         # Set up PDE_eqn
-        self.PDE_eqn = sm.Eq(uxx,f)
+        self.PDE_eqn = sm.Eq(uxx, f)
 
         # Set up boundary condition
         # bc_eq1 = sm.Piecewise((u, sm.Eq(x, xbc[0])),  (u, sm.Eq(x, xbc[1])), (0, True))
@@ -57,8 +57,8 @@ class Poisson1D:
 
     def compute_gradient(self, u, x):
             
-        ux   = torch.autograd.grad(u,  x, grad_outputs=torch.ones_like(u), retain_graph=True,  create_graph=True)[0]
-        uxx  = torch.autograd.grad(ux, x, grad_outputs=torch.ones_like(ux),retain_graph=True,  create_graph=True)[0]
+        ux   = torch.autograd.grad(u,  x, grad_outputs=torch.ones_like(u),   create_graph=True)[0]
+        uxx  = torch.autograd.grad(ux, x, grad_outputs=torch.ones_like(ux),  create_graph=True)[0]
 
         return torch.hstack([u, ux, uxx]).T
 
@@ -125,10 +125,10 @@ class ViscidBurger1D:
         self.ic_residual  = sm.lambdify([[self.x, self.t], self.U, self.h], ic_residual,  modules=sympyTorchmodules)      
 
     def compute_gradient(self, u, x):
-        ux_ut   = torch.autograd.grad(u,  x, grad_outputs=torch.ones_like(u),   retain_graph=True,  create_graph=True)[0]    
+        ux_ut   = torch.autograd.grad(u,  x, grad_outputs=torch.ones_like(u),   create_graph=True)[0]    
         ux   = ux_ut[:,0].view(-1,1)
         ut   = ux_ut[:,1].view(-1,1)
-        uxx_uxt  = torch.autograd.grad(ux, x, grad_outputs=torch.ones_like(ux), retain_graph=True,  create_graph=True)[0]
+        uxx_uxt  = torch.autograd.grad(ux, x, grad_outputs=torch.ones_like(ux), create_graph=True)[0]
         uxx = uxx_uxt[:,0].view(-1,1)
 
         return torch.hstack([u, ux, ut, uxx]).T

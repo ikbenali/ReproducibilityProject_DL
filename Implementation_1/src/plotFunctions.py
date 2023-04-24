@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-from src.NTK_helper import compute_parameter_diff, compute_NTK_diff, compute_convergence_rate
+from NTK_helper import compute_parameter_diff, compute_NTK_diff, compute_convergence_rate
 
 
 def plot_results1D(xplot, u_pred, u_exact, train_losses):
@@ -80,24 +80,37 @@ def plot_results2D(xplot, u_pred, Intervals, train_losses):
 
 def plot_NTK(net, fig=None, axs=None):
 
-    if fig == None and axs == None:
-        if len(net.NTK_log[0]['NTK_eigenvalues']) == 4:
-            fig, axs = plt.subplots(1,4, figsize=(23,6))
+    n_lambda = len(net.NTK_log[0]['NTK_eigenvalues']) 
+    epochs = list(net.NTK_log.keys())
+    last_epoch = epochs[-1]
 
-        if len(net.NTK_log[0]['NTK_eigenvalues']) == 3:
+    # create figure
+    if fig == None and axs == None:
+        if n_lambda == 4:
+            fig, axs = plt.subplots(1,4, figsize=(23,6))
+        elif n_lambda == 3:
             fig, axs = plt.subplots(1,3, figsize=(23,6))
 
+    # set array
+    if n_lambda >= 3:
+        lambda_K   = net.NTK_log[last_epoch]['NTK_eigenvalues'][0].cpu().numpy()
+        lambda_Krr = net.NTK_log[last_epoch]['NTK_eigenvalues'][1].cpu().numpy()
+        lambda_Kuu = net.NTK_log[last_epoch]['NTK_eigenvalues'][2].cpu().numpy()
+    if n_lambda >= 4:
+        lambda_Kii = net.NTK_log[last_epoch]['NTK_eigenvalues'][3].cpu().numpy()
+
+
     if hasattr(net, 'lambda_K'):
-        eig_K_plot    = np.sort(np.real(net.lambda_K.detach().cpu().numpy()))[::-1]
+        eig_K_plot    = np.sort(np.real(lambda_K))[::-1]
         axs[0].semilogx(eig_K_plot,      label=r'$\lambda_{K}$');     axs[0].set_title('Eigenvalue of K')
     if hasattr(net, 'lambda_Kuu'):
-        eig_K_uu_plot = np.sort(np.real(net.lambda_Kuu.detach().cpu().numpy()))[::-1]
+        eig_K_uu_plot    = np.sort(np.real(lambda_Kuu))[::-1]
         axs[1].semilogx(eig_K_uu_plot,   label=r'$\lambda_{uu}$');    axs[1].set_title('Eigenvalue of {}'.format(r"$K_{uu}$"))
     if hasattr(net, 'lambda_Krr'):
-        eig_K_rr_plot = np.sort(np.real(net.lambda_Krr.detach().cpu().numpy()))[::-1]
+        eig_K_rr_plot    = np.sort(np.real(lambda_Krr))[::-1]
         axs[2].semilogx(eig_K_rr_plot,   label=r'$\lambda_{rr}$');    axs[2].set_title('Eigenvalue of {}'.format(r"$K_{rr}$"))
     if hasattr(net, 'lambda_Kii'):
-        eig_K_ii_plot = np.sort(np.real(net.lambda_Kii.detach().cpu().numpy()))[::-1]
+        eig_K_ii_plot    = np.sort(np.real(lambda_Kii))[::-1]
         axs[3].semilogx(eig_K_ii_plot,   label=r'$\lambda_{ii}$');    axs[3].set_title('Eigenvalue of {}'.format(r"$K_{ii}$"))
 
     for ax in axs:

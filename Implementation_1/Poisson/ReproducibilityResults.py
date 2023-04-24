@@ -11,9 +11,13 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
 
 ### Own modules
-from src.PDE import Poisson1D
-from src.PINN import PINN
-from src.plotFunctions import plot_param_ntk_diff, plot_NTK_change, plot_convergence_rate
+### Own modules
+import sys
+sys.path.insert(0, '../src/')
+
+from PDE import Poisson1D
+from PINN import PINN
+from plotFunctions import plot_param_ntk_diff, plot_NTK_change, plot_convergence_rate
 
 ### Set dtype and device to be used
 dtype = torch.float32
@@ -24,6 +28,8 @@ elif torch.cuda.is_available():
     device = torch.device('cuda')
 else:
     device = torch.device('cpu')
+
+# device = torch.device('cpu')
 
 ### Define Poisson1D Exact, forcing function and boundary condition
 def f_u_exact(a,x):
@@ -40,7 +46,7 @@ def f_x(a, x):
     """
     fx = -(a**2)*(torch.pi**2)*torch.sin(a*torch.pi*x)
        
-    return fx
+    return fx.view(-1,1)
 
 def g_x(x, xb):
     """
@@ -55,7 +61,7 @@ def g_x(x, xb):
     ub[xb1_idx] = 0
     ub[xb2_idx] = 0
 
-    return ub
+    return ub.view(-1,1)
 
 ###### Setup PINN 
 
@@ -70,13 +76,13 @@ dx = (X_N - X_0) / NX
 # Create points for interior and boundary
 Xr = torch.linspace(X_0, X_N, NX, dtype=dtype, device=device, requires_grad=True).view(-1,1)
 Xb = torch.randint(0, 2, (NX,1),  dtype=dtype, device=device, requires_grad=True)
-X  = torch.stack((Xr, Xb), dim=0)
+X  = torch.hstack((Xr, Xb))
 
 ### Setup PINN Network
-Nr      = 100
-Nb      = 100
+Br      = 100
+Bb      = 100
 rand_sampler = RandomSampler(X, replacement=True)
-XTrain       = DataLoader(X, Nr ,sampler=rand_sampler)
+XTrain       = DataLoader(X, batch_size=Br, shuffle=True)
 
 # net parameters
 input_size  = 1
@@ -102,11 +108,17 @@ for net_i in neural_nets:
 X       = next(iter(XTrain))
 X_prime = next(iter(XTrain))
 
+xr       = X[:,0].to(device).view(-1,1);       xb       = X[:,1].to(device).view(-1,1)
+xr_prime = X_prime[:,0].to(device).view(-1,1); xb_prime = X_prime[:,1].to(device).view(-1,1)
+
+X = torch.stack([xr, xb], dim=0);      X_prime = torch.stack([xr_prime, xb_prime], dim=0)
+
 ### PLOT Eigenvalue of NTK matrices
 fig, axs = plt.subplots(1,3, figsize=(23,6))
 ylabels = [r'$\lambda_{K}$', r'$\lambda_{uu}$', r'$\lambda_{rr}$']
 
 for i in range(len(a)):
+
     neural_nets[i].NTK(X, X_prime)
 
     eig_K_plot    = np.sort(np.real(neural_nets[i].lambda_K.detach().cpu().numpy()))[::-1]
@@ -117,12 +129,12 @@ for i in range(len(a)):
     axs[1].semilogx(eig_K_uu_plot,   label=f'a={a[i]}');    axs[1].set_title('Eigenvalue of {}'.format(r"$K_{uu}$"))
     axs[2].semilogx(eig_K_rr_plot,   label=f'a={a[i]}');    axs[2].set_title('Eigenvalue of {}'.format(r"$K_{rr}$"))
 
-    for ax in axs:
-        ax.legend()
-        # ax.ticklabel_format(axis='y', scilimits=(0,0))
-        ax.set_yscale('log')
-        ax.set_ylabel(ylabels[i])
-        ax.set_xlabel(r'$Index$')
+for i,ax in enumerate(axs):
+    ax.legend()
+    # ax.ticklabel_format(axis='y', scilimits=(0,0))
+    ax.set_yscale('log')
+    ax.set_ylabel(ylabels[i])
+    ax.set_xlabel(r'$Index$')
 
 plt.show()
 
@@ -137,8 +149,14 @@ log_NTK         = True
 
 neural_nets  = [PINN(input_size, output_size, neurons_i, PDE, dtype, device, log_parameters=log_parameters, log_NTK=log_NTK) for neurons_i in neurons];
 
-x       = next(iter(XTrain))
-x_prime = next(iter(XTrain))
+X       = next(iter(XTrain))
+X_prime = next(iter(XTrain))
+
+xr       = X[:,0].to(device).view(-1,1);       xb       = X[:,1].to(device).view(-1,1)
+xr_prime = X_prime[:,0].to(device).view(-1,1); xb_prime = X_prime[:,1].to(device).view(-1,1)
+
+x = torch.stack([xr, xb], dim=0);      x_prime = torch.stack([xr_prime, xb_prime], dim=0)
+
 
 for net in neural_nets:
     net.to(device)
@@ -168,19 +186,25 @@ use_amp = True
 scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
 
 for epoch in range(epochs+1):
+    net.train()
     epoch_loss   = 0.0
+
+    net.log_parameters(epoch)
+
     for i, x in enumerate(XTrain):
 
         xr = x[:,0].view(-1,1).to(device); xb = x[:,1].view(-1,1).to(device)
+        
+        x  = torch.stack([xr, xb], dim=0)
+        if i == len(XTrain) - 1 and epoch % compute_NTK_interval != 0:
+            # get second data point set for NTK estimatino
+            x_prime  = x
 
         for i,net in enumerate(neural_nets):
-            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=use_adaptation_algorithm):
+            # reset gradients  
+            optimizers[i].zero_grad()
 
-                net.log_parameters(epoch)
-                net.train()
-
-                # reset gradients  
-                optimizers[i].zero_grad()
+            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp):
 
                 ### INTERIOR DOMAIN
                 # Predict interior points
@@ -207,14 +231,15 @@ for epoch in range(epochs+1):
                 ## Backward step
                 net.backward(x, U, fx, gx, use_adaption=use_adaptation_algorithm)
                 epoch_loss += net.loss.item()
-                if i == len(XTrain) - 1:
-                    x_prime  = x
 
             # Do optimisation step
-            scaler.scale(net.loss).backward()
-            scaler.step(optimizers[i])
-            scaler.update()
-
+            if use_amp:
+                scaler.scale(net.loss).backward()
+                scaler.step(optimizers[i])
+                scaler.update()
+            else:
+                net.loss.backward()
+                optimizers[i].step()
     ### END Batch loop
 
     # Compute NTK

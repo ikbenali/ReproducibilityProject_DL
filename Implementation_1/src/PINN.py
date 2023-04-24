@@ -14,27 +14,33 @@ class PINN(nn.Module):
         self.dtype  = dtype
         self.device = device
 
+        self.enable_parameter_log = log_parameters
+        self.enable_NTK_log       = log_NTK
+
         # initialize values for nn
         self.xin        = input_size
         self.xout       = output_size
         self.neurons    = torch.tensor(neurons)
+        
+        # single activation function for whole network
+        self.activation = nn.Tanh()      
 
         # Define layers of network
         self.input_layer      = nn.Linear(input_size, self.neurons[0], dtype=dtype,  device=device)
         layers = [self.input_layer]
+        layers.append(self.activation)
+
         if len(neurons) > 1:
             for i, neuron in enumerate(self.neurons[1:]):
                 layer = nn.Linear(self.neurons[i-1], neuron, dtype=dtype, device=device)
                 layers.append(layer)
+                layers.append(self.activation)
 
         self.output_layer     = nn.Linear(self.neurons[-1], output_size, dtype=dtype, device=device)
         layers.append(self.output_layer)
 
-        self.layers = nn.ModuleList(layers)
+        self.layers = nn.Sequential(*layers)
         self.n_layers = len(self.layers)
-        
-        # single activation function for whole network
-        self.activation = nn.Tanh()      
 
         # Initialize weights of the network
         self.apply(self._init_weights)
@@ -69,8 +75,8 @@ class PINN(nn.Module):
         if isinstance(module, nn.Linear):
             nn.init.xavier_normal_(module.weight.data)    
             if module.bias is not None:
-                nn.init.normal_(module.bias.data)            
-
+                nn.init.uniform_(module.bias.data)
+                
     def log_parameters(self, epoch):
         params = {k: v.detach().clone() for k, v in self.named_parameters()}
 
@@ -86,30 +92,28 @@ class PINN(nn.Module):
         self.network_parameters_log[epoch] = {'weight': weights, 'bias':bias}
 
     def forward(self, x):
-
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i < self.n_layers - 1:
-                x = self.activation(x)
-
+        x = self.layers(x)
         return x
     
     def backward(self, X, U, f=None, g=None, h=None, use_adaption=False):
 
-        if X.shape[0] == 3:
+        if isinstance(X, list) and isinstance(U, list):
+            N = len(X);    M = len(U)
+        elif isinstance(X, torch.Tensor) and isinstance(U, torch.Tensor):
+            N = X.shape[0];   M = U.shape[0]
+
+        if N == 3:
             xr = X[0].T
             xb = X[1].T
             xi = X[2].T
-            
-        elif X.shape[0] == 2:
+        elif N == 2:
             xr = X[0].T
             xb = X[1].T
-
-        if U.shape[0] == 3:
+        if M == 3:
             U_x = U[0]
             U_xb = U[1]
             U_xi = U[2]
-        elif U.shape[0] == 2:
+        elif M == 2:
             U_x  = U[0]
             U_xb = U[1]
 
@@ -119,9 +123,9 @@ class PINN(nn.Module):
             lambda_1 = 1.0
             if use_adaption:
                 lambda_1 = self.lambda_adaptation[0]
-
-            residual        = self.pde_residual(xr, U_x, f).T
-            self.pde_loss   = lambda_1 * torch.mean(residual**2)
+                
+            residual        = self.pde_residual(xr, U_x, f)
+            self.pde_loss   = lambda_1 * torch.mean(torch.square(residual))
         
             loss.append(self.pde_loss)
 
@@ -131,8 +135,8 @@ class PINN(nn.Module):
             if use_adaption:
                 lambda_2 = self.lambda_adaptation[1]
 
-            residual        = self.bc_residual(xb, U_xb, g).T
-            self.bc_loss    = lambda_2*torch.mean(residual**2)
+            residual        = self.bc_residual(xb, U_xb, g)
+            self.bc_loss    = lambda_2 * torch.mean(torch.square(residual))
         
             loss.append(self.bc_loss)   
 
@@ -140,18 +144,16 @@ class PINN(nn.Module):
             lambda_3 = 1.0
             if use_adaption:
                 lambda_3 = self.lambda_adaptation[2]
-            residual        = self.ic_residual(xi, U_xi, h).T
-            self.ic_loss    = lambda_3*torch.mean(residual**2)
+
+            residual        = self.ic_residual(xi, U_xi, h)
+            self.ic_loss    = lambda_3*torch.mean(torch.square(residual))
             loss.append(self.ic_loss)
 
-        loss = torch.stack(loss, dim=0).sum()
+        self.train_loss = torch.stack(loss, dim=0)
+
+        self.loss = self.train_loss.sum()
         
-        self.loss = loss
-
     def compute_jacobian(self, x, grad_fn, residual_fn):
-
-        # create function for use to flatten array
-        flatten_grad = lambda row: torch.cat([elem.reshape(-1) for elem in row]).view(1,-1)
 
         device = self.device
         dtype  = self.dtype
@@ -162,30 +164,41 @@ class PINN(nn.Module):
         
         #### Compute LHS of PDE equation and set the rhs to zero
         rhs = torch.zeros((x.shape[0],1), dtype=dtype, device=device).T
-        lhs = residual_fn(x.T, y_x, rhs)
+        lhs = residual_fn(x.T, y_x, rhs).view(-1)
+        N   = lhs.shape[0]
+        I_N = torch.eye(N, dtype=dtype, device=device)
 
         #### Compute the Jacobian
-        J_y = []
-        for i in range(len(x)):
-            row = flatten_grad(torch.autograd.grad(lhs[:,i], self.parameters(), grad_outputs=torch.ones_like(lhs[:,i]), retain_graph=True))
-            J_y.append(row.detach().clone())
-        # End jacobian computation over parameters
+        if N <= 1000:
+            flatten_grad = lambda col: torch.hstack([elem.detach().view(N,-1) for elem in col])
+            J_y = flatten_grad(torch.autograd.grad(lhs, self.parameters(), I_N, is_grads_batched=True))
+        else:
+            def compute_vjp(v):
+                row = torch.autograd.grad(lhs, self.parameters(), grad_outputs=v, retain_graph=True)
+                return row
+            J_y = torch.vmap(compute_vjp, chunk_size=200)(I_N)
+            J_y = torch.hstack([col.detach().view(N,-1) for col in J_y])
 
-        return torch.vstack(J_y)
+        return J_y
 
     def NTK(self, X1, X2):
 
         PDE_K = False; BC_K = False;    IC_K = False
 
-        if X1.shape[0] == 3 and X2.shape[0] == 3:
-            xr1 = X1[0, :];   xb1 = X1[1, :];   xi1 = X1[2, :]
-            xr2 = X2[0, :];   xb2 = X2[1, :];   xi2 = X2[2, :]
-        elif X1.shape[0] == 2 and X2.shape[0] == 2:
-            xr1 = X1[0, :];   xb1 = X1[1, :]
-            xr2 = X2[0, :];   xb2 = X2[1, :]
+        if isinstance(X1, list) and isinstance(X2, list):
+            N1 = len(X1);    N2 = len(X2)
+        elif isinstance(X1, torch.Tensor) and isinstance(X2, torch.Tensor):
+            N1 = X1.shape[0];   N2 = X2.shape[0]
+        
+        if N1 == 3 and N2 == 3:
+            xr1 = X1[0];   xb1 = X1[1];   xi1 = X1[2]
+            xr2 = X2[0];   xb2 = X2[1];   xi2 = X2[2]
+        elif N1 == 2 and N2 == 2:
+            xr1 = X1[0];   xb1 = X1[1]
+            xr2 = X2[0];   xb2 = X2[1]
         else:
-            xr1 = xb1 = X1
-            xr2 = xb2 = X2
+            xr1 = X1 
+            xr2 = X2 
 
         if hasattr(self, 'pde_residual'):
 
@@ -196,10 +209,10 @@ class PINN(nn.Module):
 
             # compute NTK matrix for PDE residual
 
-            self.Krr            = torch.matmul(J_r1, J_r2.T)
+            self.Krr            = torch.matmul(J_r1, J_r2.T) 
             self.lambda_Krr, _  = torch.linalg.eig(self.Krr)
-        # endif
 
+        # endif
         if hasattr(self, 'bc_residual'):
 
             BC_K = True   
@@ -226,7 +239,7 @@ class PINN(nn.Module):
         if PDE_K and BC_K and IC_K:
             K1 = torch.vstack((J_u1,   J_r1, J_i1))
             K2 = torch.hstack((J_u2.T, J_r2.T, J_i2.T))
-            self.K = torch.matmul(K1, K2)
+            self.K = torch.matmul(K1, K2) 
             self.lambda_K,_ = torch.linalg.eig(self.K)
         elif PDE_K and BC_K:
             K1 = torch.vstack((J_u1,   J_r1))
@@ -235,6 +248,7 @@ class PINN(nn.Module):
             self.K = torch.matmul(K1, K2)
 
             self.lambda_K, _ = torch.linalg.eig(self.K)
+
         # endif
 
         # update adaption terms
@@ -242,13 +256,17 @@ class PINN(nn.Module):
 
         if PDE_K:
             Krr_trace = torch.trace(self.Krr)
+            # print(K_trace, Krr_trace)
             self.lambda_adaptation[0] = K_trace / Krr_trace
         if BC_K:
             Kuu_trace = torch.trace(self.Kuu)
+            # print(K_trace, Kuu_trace)
             self.lambda_adaptation[1] = K_trace / Kuu_trace
         if IC_K:
             Kii_trace = torch.trace(self.Kii)
-            self.lambda_adaptation[2] = K_trace / Kii_trace
+            self.lambda_adaptation[2] = K_trace / Kii_trace 
+
+        # self.lambda_adaptation = torch.clip(self.lambda_adaptation, min=1.)
 
     def log_NTK(self, epoch):
         NTK_matrix = []
@@ -285,7 +303,12 @@ class PINN(nn.Module):
         else:
             f = h5py.File(filename, mode='w')
 
-        logs = [self.network_parameters_log, self.NTK_log]
+        logs = [] 
+
+        if hasattr(self, 'network_parameters_log'):
+            logs.append(self.network_parameters_log)
+        if hasattr(self, 'NTK_log'):
+            logs.append(self.NTK_log)
 
         for log in logs:
             for epoch in log:
@@ -302,11 +325,12 @@ class PINN(nn.Module):
                         else:
                             grp[str(i)][:] = new_item
         if reset:
-            self.network_parameters_log = {}
-            self.NTK_log = {}
-
+            if hasattr(self, 'network_parameters_log'):
+                self.network_parameters_log = {}
+                logs.append(self.network_parameters_log)
+            if hasattr(self, 'NTK_log'):
+                self.NTK_log = {}
         f.close()
-
 
     def read_log(self, pathfile):
         # read file
@@ -330,14 +354,16 @@ class PINN(nn.Module):
                     NTK_matrix = row
                 elif group == "NTK_eigenvalues":
                     NTK_eigenvalues = row
-                    
+            
             epoch = int(epoch)
             epochs.append(epoch)
             network_parameters_log[epoch] = {'weight': weights, 'bias':bias}
-            NTK_log[epoch] = {'NTK_matrix': NTK_matrix, 
+            if self.enable_NTK_log:
+                NTK_log[epoch] = {'NTK_matrix': NTK_matrix, 
                                         'NTK_eigenvalues': NTK_eigenvalues}
         epochs.sort()
         self.network_parameters_log = {epoch_i: network_parameters_log[epoch_i] for epoch_i in epochs}
-        self.NTK_log                = {epoch_i: NTK_log[epoch_i] for epoch_i in epochs}
+        if self.enable_NTK_log:
+            self.NTK_log                = {epoch_i: NTK_log[epoch_i] for epoch_i in epochs}
 
         f.close()
