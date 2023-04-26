@@ -8,7 +8,7 @@ import h5py
 
 
 class PINN(nn.Module):
-    def __init__(self, input_size, output_size, neurons, PDE, dtype=torch.float32, device='cpu', log_parameters=True, log_NTK=False):
+    def __init__(self, input_size, output_size, neurons, PDE, init_type='normal', dtype=torch.float32, device='cpu', log_parameters=True, log_NTK=False):
         super(PINN, self).__init__()
 
         self.dtype  = dtype
@@ -43,6 +43,7 @@ class PINN(nn.Module):
         self.n_layers = len(self.layers)
 
         # Initialize weights of the network
+        self.init_type = init_type
         self.apply(self._init_weights)
 
         # import and initialize PDE
@@ -73,10 +74,17 @@ class PINN(nn.Module):
     def _init_weights(self, module):
         # Glorot Weight initalisation
         if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight.data)    
+            if module.bias is not None: 
+                if self.init_type == 'normal':
+                    nn.init.normal_(module.weight.data)
+                elif self.init_type == 'xavier':
+                    nn.init.xavier_normal_(module.weight.data)                
             if module.bias is not None:
-                nn.init.uniform_(module.bias.data)
-                
+                if self.init_type == 'normal':
+                    nn.init.normal_(module.bias.data)
+                elif self.init_type == 'xavier':
+                    nn.init.zeros_(module.bias.data)
+                                
     def log_parameters(self, epoch):
         params = {k: v.detach().clone() for k, v in self.named_parameters()}
 
@@ -176,7 +184,7 @@ class PINN(nn.Module):
             def compute_vjp(v):
                 row = torch.autograd.grad(lhs, self.parameters(), grad_outputs=v, retain_graph=True)
                 return row
-            J_y = torch.vmap(compute_vjp, chunk_size=200)(I_N)
+            J_y = torch.vmap(compute_vjp, chunk_size=500)(I_N)
             J_y = torch.hstack([col.detach().view(N,-1) for col in J_y])
 
         return J_y
@@ -239,6 +247,7 @@ class PINN(nn.Module):
         if PDE_K and BC_K and IC_K:
             K1 = torch.vstack((J_u1,   J_r1, J_i1))
             K2 = torch.hstack((J_u2.T, J_r2.T, J_i2.T))
+
             self.K = torch.matmul(K1, K2) 
             self.lambda_K,_ = torch.linalg.eig(self.K)
         elif PDE_K and BC_K:

@@ -1,11 +1,16 @@
 import torch
+import numpy as np
 
 def compute_norm(matrix):
     # norm = torch.sqrt(torch.sum(matrix**2))
-    if len(matrix.shape) > 1:
-        norm = torch.linalg.matrix_norm(matrix)
-    else:
-        norm = torch.linalg.norm(matrix)
+
+    if isinstance(matrix, torch.Tensor):
+        if len(matrix.shape) > 1:
+            norm = torch.linalg.matrix_norm(matrix, 2)
+        else:
+            norm = torch.linalg.norm(matrix, 2)
+    elif isinstance(matrix, np.ndarray):
+        norm = np.linalg.norm(matrix, 2)
     return norm
 
 def compute_parameter_diff(net): 

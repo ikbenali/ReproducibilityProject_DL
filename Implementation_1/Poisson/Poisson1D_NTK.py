@@ -102,7 +102,7 @@ log_parameters     = True
 input_size  = 1
 output_size = 1
 neurons     = [100]
-net         = PINN(input_size, output_size, neurons, PDE, dtype, device, log_parameters, log_NTK)
+net         = PINN(input_size, output_size, neurons, PDE, 'normal', dtype, device, log_parameters, log_NTK)
 net.to(device)
 
 torchinfo.summary(net, input_size=(Br, 1))

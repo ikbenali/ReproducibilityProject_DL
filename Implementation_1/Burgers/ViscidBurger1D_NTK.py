@@ -37,39 +37,43 @@ else:
 
 
 ### Define Viscid1D Exact, forcing function and boundary condition
-def f_u_exact(x, t):
+def u_exact():
     """ 
     Exact solution
     """
-    u_exact = -torch.sin(torch.pi*x)*torch.cos(t)
+    data = scipy.io.loadmat('../Data/burgers_shock.mat')
 
-    return u_exact.view(-1,1)
+    t = data['t'].flatten()[:,None]
+    x = data['x'].flatten()[:,None]
+    u_exact = np.real(data['usol'])
+
+    return x, t, u_exact
 
 def f_x(x,t):
     """
     Source/Forcing function
     """
 
-    fx = torch.zeros(x.size(), dtype=dtype)
+    fx = torch.zeros( (1, x.shape[0]), dtype=dtype, device=device)
        
-    return fx.view(-1,1)
+    return fx
 
 def g_x(x, t, xb, t_ic):
     """
     Boundary condition
     """
     
-    ub = torch.zeros(x.size(), dtype=dtype, device=device).view(-1,1)
+    ub = torch.zeros((1, x.shape[0]), dtype=dtype, device=device)
 
     # check for boundary condition
     xb1_idx = torch.where(x == xb[0])[0]
     xb2_idx = torch.where(x == xb[1])[0]
 
     # assert boundary condition
-    ub[xb1_idx] = 0
-    ub[xb2_idx] = 0
+    ub[:,xb1_idx] = 0
+    ub[:,xb2_idx] = 0
 
-    return ub.view(-1,1)
+    return ub
 
 def h_x(x, t, t_ic):
     """
@@ -77,7 +81,7 @@ def h_x(x, t, t_ic):
     """
     u_ic = -torch.sin(torch.pi*x)
 
-    return u_ic.view(-1,1)
+    return u_ic
 
 from scipy.stats import qmc
 def latin_hypercube(X_0, X_N, N):
@@ -88,7 +92,9 @@ def latin_hypercube(X_0, X_N, N):
     if dtype == torch.float32:
         sample = sample.astype(np.float32)
 
-    return torch.from_numpy(sample).requires_grad_(True).to(device)
+    sample = torch.from_numpy(sample).requires_grad_(True).to(device)
+
+    return sample
 
 def create_bc_points(N, lb, up):
     Xb = torch.cat( [lb*torch.ones((N//2, 1), dtype=dtype), up*torch.ones((N//2, 1), dtype=dtype)] ).to(device).requires_grad_(True)
@@ -106,9 +112,9 @@ t_ic     = T_0
 X_bc     = [X_0, X_N]
 
 # Number of points for interior, boundary and inital condition
-NX = int(2000)
-Nb = int(500)
-Ni = int(500)
+NX = int(2048)
+Nb = int(512)
+Ni = int(512)
 
 Xr = latin_hypercube(X_0, X_N, NX)
 T  = latin_hypercube(T_0, T_N, NX)
@@ -122,21 +128,6 @@ Ti = torch.zeros((Ni,1), dtype=dtype, requires_grad=True, device=device)
 X_r     = torch.hstack([Xr, T])
 X_bc_ic = torch.hstack([Xb, Tb, Xi, Ti] )
 
-
-def create_dataset(Br, Bb, Bi):
-    Xr = latin_hypercube(X_0, X_N, NX)
-    T  = latin_hypercube(T_0, T_N, NX)
-
-    Xb = create_bc_points(Nb, X_0, X_N)
-    Tb = latin_hypercube(T_0, T_N, Nb)
-
-    Xi = latin_hypercube(X_0, X_N, Ni)
-    Ti = torch.zeros((Ni,1), dtype=dtype, requires_grad=True, device=device)
-
-    X_r     = torch.hstack([Xr, T])
-    X_bc_ic = torch.hstack([Xb, Tb, Xi, Ti] )
-
-    return X_r, X_bc_ic
 
 #### PINN
 
@@ -156,18 +147,25 @@ log_parameters     = True
 log_NTK            = True
 
 # Adapation algorithm
-use_adaptation_algorithm = True
+use_adaptation_algorithm = False
+
+# correct for coupled parameters
 if not compute_NTK:
     use_adaptation_algorithm = False
+if not compute_NTK:
+    log_NTK = False
+if not compute_NTK:
+    use_adaptation_algorithm = False    
+
 
 ### Setup PINN
 
 # Dataset preparation
 
 # Batch size
-Br = 500
-Bb = 500
-Bi = 500
+Br = 512
+Bb = 512
+Bi = 512
 rand_sampler1 = RandomSampler(X_r, replacement=True)
 XTrain        = DataLoader(X_r, batch_size=Br ,sampler=rand_sampler1)
 
@@ -179,18 +177,14 @@ training_batches_xb = len(XTrain_bc_ic)
 
 print(f"Training batch XTrain: {training_batches} \nTraining batch XTrain_bc: {training_batches_xb}")
 
-
-# Create network
-if not compute_NTK:
-    log_NTK = False
-if not compute_NTK:
-    use_adaptation_algorithm = False    
-
 input_size  = 2
 output_size = 1
-neurons     = [20, 20, 20, 20, 20, 20, 20, 20]
+neurons     = [24, 24, 24, 24, 24, 24, 24]
 # neurons     = [1000]
-net         = PINN(input_size, output_size, neurons, PDE, dtype, device, log_parameters, log_NTK)
+
+init_type = 'xavier' # initialisation type for the weights
+
+net         = PINN(input_size, output_size, neurons, PDE, init_type,  dtype, device, log_parameters, log_NTK)
 net.to(device)
 
 if dtype == torch.float64:
@@ -199,8 +193,8 @@ if dtype == torch.float64:
 torchinfo.summary(net, input_size=(Br, 2), dtypes=[dtype], device=device)
 
 # Training parameter
-learning_rate = 1e-3
-epochs        = int(1000)
+learning_rate = 1e-5
+epochs        = int(10e3)
 optimizer = optim.SGD
 # optimizer = optim.Adam
 # optimizer = optim.LBFGS
@@ -263,10 +257,6 @@ if train_model:
         xb          = x_bc_ic[:,[0,1]].view(-1,2);          xi          = x_bc_ic[:,[2,3]].view(-1,2)
         xb_prime    = x_bc_ic_prime[:,[0,1]].view(-1,2);    xi_prime    = x_bc_ic_prime[:,[2,3]].view(-1,2)
         
-        x.to(device)
-        xb.to(device);          xi.to(device)
-        xb_prime.to(device);    x_prime.to(device)
-
         x       = [x, xb, xi]
         x_prime = [x_prime, xb_prime, xi_prime]
 
@@ -279,6 +269,9 @@ if train_model:
 
         max_lr = 2/torch.max(torch.real(net.lambda_K))
 
+        if(learning_rate > max_lr):
+            print(f"Learning step greater than max_NTK_lr: 2 / lambda_max, unstable training. Lower learning rate. lr= {learning_rate} max_lr: {max_lr.item()}")
+        
         # reset lambda
         # net.lambda_adaptation = torch.Tensor([1., 1., 1.]).to(device)
 
@@ -298,12 +291,11 @@ if train_model:
 
         for i, xr in enumerate(XTrain):
             # asymmetrical training sets
-            x_bc_ic = next(iter(XTrain_bc_ic))     
+            x_bc_ic = next(iter(XTrain_bc_ic))
 
             # set up training sets
-            xr = xr.to(device)
-            xb = x_bc_ic[:,[0,1]].view(-1,2).to(device)
-            xi = x_bc_ic[:,[2,3]].view(-1,2).to(device)
+            xb = x_bc_ic[:,[0,1]].view(-1,2)
+            xi = x_bc_ic[:,[2,3]].view(-1,2)
 
             x = [xr, xb, xi]
 
@@ -330,13 +322,13 @@ if train_model:
                     U_xi        =  net.compute_pde_gradient(u_hat_xi, xi)    
                 
                     # Compute forcing/source function
-                    fx = f_x(xr[:,0], xr[:,1]).T.to(device)
+                    fx = f_x(xr[:,0], xr[:,1])
 
                     # compute boundary condition
-                    gx = g_x(xb[:,0], xb[:,1], X_bc, t_ic).to(device)
+                    gx = g_x(xb[:,0], xb[:,1], X_bc, t_ic)
 
                     # compute initial condition
-                    hx = h_x(xi[:,0], xi[:,1], t_ic).T.to(device)
+                    hx = h_x(xi[:,0], xi[:,1], t_ic)
 
                     # Stack
                     U = [U_x, U_xb, U_xi]
@@ -346,8 +338,6 @@ if train_model:
 
                 if isinstance(optimizer, optim.LBFGS):
                     net.loss.backward(retain_graph=True)
-                elif not use_amp:
-                    net.loss.backward()
 
                 return net.loss
 
@@ -361,6 +351,7 @@ if train_model:
                     scaler.step(optimizer)
                     scaler.update()
                 else:
+                    net.loss.backward()
                     optimizer.step()
             
             # compute loss over batch
@@ -369,8 +360,8 @@ if train_model:
         # scheduler.step()
 
         # Compute NTK
-        if epoch > 0:
-            if (epoch % compute_NTK_interval == 0 or epoch == epochs - 1) and compute_NTK:
+        if epoch > 0 and epoch < epochs - 1:
+            if (epoch % compute_NTK_interval == 0) and compute_NTK:
             
                 net.eval()
                 net.NTK(x, x_prime)
@@ -418,12 +409,12 @@ pathfile  = path+file_name
 Path(path).mkdir(parents=True, exist_ok=True)
 
 net.eval()
-N = int(1e2)
+Nx = int(256)
+Nt = 100
 
-xplot = torch.linspace(X_0, X_N, N, dtype=dtype, device=device).view(-1,1)
-tplot = torch.linspace(T_0, T_N, N, dtype=dtype, device=device).view(-1,1)
+xplot = torch.linspace(X_0, X_N, Nx, dtype=dtype, device=device).view(-1,1)
+tplot = torch.linspace(T_0, T_N, Nt, dtype=dtype, device=device).view(-1,1)
 
-u_exact = []
 u_pred  = []
 
 # compute prediction solution
@@ -438,8 +429,8 @@ u_pred  = u_pred.cpu().detach().numpy()
 
 ## Plot 1 - Prediction and training loss
 xplot = np.hstack([xplot, tplot])
-T_idxs = [0.25, 0.5, 0.75]
-plot_results2D(xplot, u_pred, T_idxs, train_losses )
+T_idxs = [0, 0.25, 0.5, 0.75]
+plot_results2D(xplot, u_pred, u_exact, T_idxs, train_losses )
 plt.savefig(pathfile+'_plot_2D')
 
 if log_NTK and log_parameters:

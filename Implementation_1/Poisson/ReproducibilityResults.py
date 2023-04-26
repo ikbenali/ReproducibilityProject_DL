@@ -1,5 +1,6 @@
 """
-
+CS4240: Deep Learning
+Reproducbility project
 """
 
 import torch
@@ -10,7 +11,6 @@ import matplotlib.pyplot  as plt
 import torch.optim as optim
 from torch.utils.data import DataLoader, RandomSampler
 
-### Own modules
 ### Own modules
 import sys
 sys.path.insert(0, '../src/')
@@ -99,7 +99,7 @@ epochs        = int(10e3)
 ### Setup PDE Equation
 a   = [1, 2, 4]
 PDE = [Poisson1D(a_i) for a_i in a]
-neural_nets =  [PINN(input_size, output_size, neurons, PDE_i, dtype, device).to(device) for PDE_i in PDE]; 
+neural_nets =  [PINN(input_size, output_size, neurons, PDE_i, 'normal',  dtype, device).to(device) for PDE_i in PDE]; 
 
 for net_i in neural_nets:
     net_i.eval()
@@ -147,7 +147,7 @@ PDE     = Poisson1D(a)
 log_parameters  = True
 log_NTK         = True
 
-neural_nets  = [PINN(input_size, output_size, neurons_i, PDE, dtype, device, log_parameters=log_parameters, log_NTK=log_NTK) for neurons_i in neurons];
+neural_nets  = [PINN(input_size, output_size, neurons_i, PDE, 'normal', dtype, device, log_parameters=log_parameters, log_NTK=log_NTK) for neurons_i in neurons];
 
 X       = next(iter(XTrain))
 X_prime = next(iter(XTrain))

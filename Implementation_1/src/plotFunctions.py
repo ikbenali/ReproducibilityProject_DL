@@ -42,41 +42,66 @@ def plot_results1D(xplot, u_pred, u_exact, train_losses):
 
     return fig, axs
 
-def plot_results2D(xplot, u_pred, Intervals, train_losses): 
+def plot_results2D(xplot, u_pred, u_exact, Intervals, train_losses): 
 
 
     fig = plt.figure(1, (23,8), layout='tight')
-    gs = fig.add_gridspec(2,3)
+    gs = fig.add_gridspec(3,4)
 
     ### Plot 1 - solution profile
-    ax0 = fig.add_subplot(gs[0,:2])
-    ax0.set_xlabel(r't [s]')
-    ax0.set_ylabel(r'$x$')
+    ax1 = fig.add_subplot(gs[0,:2])
+    ax1.set_xlabel(r't [s]')
+    ax1.set_ylabel(r'$x$')
+    ax1.set_title('Predicted u')
     
     # plot result
-    h = ax0.imshow(u_pred, interpolation='nearest', cmap='rainbow',
-    extent=[xplot[:,1].min(), xplot[:,1].max(), xplot[:,0].min(), xplot[:,0].max()],
-    origin='lower', aspect='auto')
+    h = ax1.imshow(u_pred, interpolation='nearest', cmap='rainbow',
+        extent=[xplot[1].min(), xplot[1].max(), xplot[0].min(), xplot[0].max()],
+        origin='lower', aspect='auto')
 
     # add colorbar
-    divider = make_axes_locatable(ax0)
+    divider = make_axes_locatable(ax1)
     cax = divider.append_axes("right", size="5%", pad=0.05)
     fig.colorbar(h, cax=cax)
 
-    ### Plot 2 - training loss
-    ax1 = fig.add_subplot(gs[0,2])
-    ax1.semilogy(train_losses)
-    ax1.set_ylabel(r'loss per epoch')
-    ax1.set_xlabel(r'$Epoch$')
+    ### Plot 2 - point wise difference
+    ax2 = fig.add_subplot(gs[0, 2:])
+    ax2.set_xlabel(r't [s]')
+    ax2.set_ylabel(r'$x$')
+
+    error_u = np.abs((u_exact - u_pred))
+    error_u_l2 = np.linalg.norm(u_exact - u_pred,2) / np.linalg.norm(u_exact,2)
+    ax2.set_title('Absolute error \n' +  r'$L^{2}$ error = '  + f'{error_u_l2:.3E}')
+
+    # plot result
+    h = ax2.imshow(error_u, interpolation='nearest', cmap='rainbow',
+        extent=[xplot[1].min(), xplot[1].max(), xplot[0].min(), xplot[0].max()],
+        origin='lower', aspect='auto')
+
+    # add colorbar
+    divider = make_axes_locatable(ax2)
+    cax = divider.append_axes("right", size="5%", pad=0.05)
+    fig.colorbar(h, cax=cax)
 
     ### Plot 3 - solution slice at different domain intervals
-    Intervals = [0.25, 0.5, 0.75]
-
     for i, t_idx in enumerate(Intervals):
-        idx = (np.abs(xplot[:,1] - t_idx)).argmin()
-        ax2 = fig.add_subplot(gs[1,i])
-        ax2.plot(xplot[:,0], u_pred[:,idx])
-        ax2.set_title(f't = {xplot[idx, 1]:1g} ')
+        closest_neighbor = np.abs(xplot[1] - t_idx)
+        if closest_neighbor.min() > 0.1:
+            print("warning gap to closest neighbor is larger than 0.1")
+        
+        idx = (closest_neighbor).argmin()
+        ax3 = fig.add_subplot(gs[1,i])
+        ax3.plot(xplot[0], u_pred[:,idx],  label=r'$u_{pred}$' )
+        ax3.plot(xplot[0], u_exact[:,idx], label=r'$u_{exact}$')
+        ax3.set_title(f't = {t_idx}')
+        ax3.legend()
+
+    ### Plot 4 - training loss
+    ax4 = fig.add_subplot(gs[2,:])
+    ax4.semilogy(train_losses)
+    ax4.set_ylabel(r'loss per epoch')
+    ax4.set_xlabel(r'$Epoch$')
+    ax4.set_title('Training loss')
 
 def plot_NTK(net, fig=None, axs=None):
 
