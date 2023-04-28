@@ -25,7 +25,6 @@ from plotFunctions import plot_results1D, plot_NTK, plot_param_ntk_diff, plot_NT
 ### Set dtype and device to be used
 dtype = torch.float32
 
-
 save_model      = True
 train_model     = True
 model_name      = 'Poisson1D'
@@ -122,7 +121,7 @@ compute_NTK          = True
 compute_NTK_interval = 10
 
 ### Adapation algorithm
-use_adaptation_algorithm = False
+use_adaptation_algorithm = True
 
 ### Model save settings
 if use_adaptation_algorithm:

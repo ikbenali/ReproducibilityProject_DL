@@ -6,6 +6,8 @@ import torch.nn as nn
 import os
 import h5py
 
+torch.manual_seed(0)
+torch.cuda.manual_seed(0)
 
 class PINN(nn.Module):
     def __init__(self, input_size, output_size, neurons, PDE, init_type='normal', dtype=torch.float32, device='cpu', log_parameters=True, log_NTK=False):

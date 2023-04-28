@@ -15,7 +15,7 @@ def plot_results1D(xplot, u_pred, u_exact, train_losses):
     # Plot 1 - predict 
     ax0 = fig.add_subplot(gs[0,0])
     ax0.plot(xplot, u_exact, label=r'$u_{exact}$')
-    ax0.plot(xplot, u_pred,  label=r'$u_{pred}$')
+    ax0.plot(xplot, u_pred, '-', label=r'$u_{pred}$')
     ax0.set_title('Exact vs. neural network prediction')
     ax0.set_ylabel(r'$u$')
     ax0.set_xlabel(r'$x$')
@@ -26,7 +26,7 @@ def plot_results1D(xplot, u_pred, u_exact, train_losses):
     pointWise_err = u_exact - u_pred
 
     ax1 = fig.add_subplot(gs[0,1])
-    ax1.plot(xplot, pointWise_err)
+    ax1.semilogy(xplot, pointWise_err)
     ax1.set_title('Error')
     ax1.set_ylabel('Point-wise difference')
     ax1.set_xlabel(r'$x$')
@@ -168,29 +168,41 @@ def plot_param_ntk_diff(net, fig = None, axs=None):
         # ax.set_yscale('log')
         ax.legend()
         ax.set_xlabel(r'$Epoch$')
-    axs[0].set_ylabel(r'$\frac{||\theta - \theta(0)||^{2}}{||\theta(0)||^{2}}$')
-    axs[1].set_ylabel(r'$\frac{||K(n) - K(0)||^{2}}{||K(0)||^{2}}$')
+    axs[0].set_ylabel(r'$\frac{||\theta - \theta(0)||^{2}}{||\theta(0)||^{2}}$', size=14)
+    axs[1].set_ylabel(r'$\frac{||K(n) - K(0)||^{2}}{||K(0)||^{2}}$', size=14)
 
     return fig, axs
 
-def plot_NTK_change(net, fig=None, axs= None):
+def plot_NTK_change(net, fig=None, axs= None, c='b', plot_intervals=False):
 
     if fig == None and axs == None:
         fig, axs = plt.subplots(1,2, figsize=(18,6))
 
     fig.suptitle('NTK kernel matrix K change over time')
-
     NTK_epochs = list(net.NTK_log.keys())
 
-    for epoch in NTK_epochs:
-        if epoch == 0:
-            eig_K       = net.NTK_log[epoch]['NTK_eigenvalues'][0]
-            eig_K_plot  = np.sort(np.real(eig_K.detach().cpu().numpy()))[::-1]
-            axs.semilogy(eig_K_plot,   label=f'epoch={epoch}'); 
-        elif epoch == NTK_epochs[-1]:
-            eig_K       = net.NTK_log[epoch]['NTK_eigenvalues'][0]
-            eig_K_plot  = np.sort(np.real(eig_K.detach().cpu().numpy()))[::-1]
-            axs.semilogy(eig_K_plot,   label=f'epoch={epoch}'); 
+    initial_NTK = NTK_epochs[0]
+    final_NTK   = NTK_epochs[-1]
+
+    eig_K       = net.NTK_log[initial_NTK]['NTK_eigenvalues'][0]
+    eig_K_plot  = np.sort(np.real(eig_K.detach().cpu().numpy()))[::-1]
+    axs.semilogy(eig_K_plot,        color=c,  label=f'epoch={initial_NTK}'); 
+
+    eig_K       = net.NTK_log[final_NTK]['NTK_eigenvalues'][0]
+    eig_K_plot  = np.sort(np.real(eig_K.detach().cpu().numpy()))[::-1]
+    axs.semilogy(eig_K_plot, '--',  color=c,  label=f'epoch={final_NTK}'); 
+
+    if plot_intervals:
+        plot = False
+        for epoch in NTK_epochs:
+            if epoch % 10 and epoch != NTK_epochs[-1]:
+                plot = True
+            else:
+                plot = False
+            if plot:
+                eig_K       = net.NTK_log[epoch]['NTK_eigenvalues'][0]
+                eig_K_plot  = np.sort(np.real(eig_K.detach().cpu().numpy()))[::-1]
+                axs.semilogy(eig_K_plot, '--',  color=c, label=f'epoch={epoch}'); 
 
     axs.set_xscale('log')
     axs.set_xlabel(r'$Epoch$')
