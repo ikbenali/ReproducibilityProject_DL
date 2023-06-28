@@ -67,29 +67,6 @@ adapt_lr                 = False
 
 Adam optimizer
 
-# Result 4 [optimal]
-
-### Number of points for interior, boundary and inital condition
-Nr = int(3200)
-Nb = int(160) 
-Ni = int(320)
-
-### Batch size
-Br = 640
-Bb = 80
-Bi = 160
-
-neurons = [480, 480, 480, 480, 480]
-learning_rate = 1e-3
-epochs        = int(40e3)
-
-compute_NTK_interval = 1000
-use_adaptation_algorithm = True
-adapt_lr                 = True
-
-Adam optimizer
-
-
 # Pitfalls
 
 * Balancing act between suffient set of datapoints and batch size. If the batch size or dataset is too small, the adaptation algorithm can have negative weights resulting in unstable training behavior.
