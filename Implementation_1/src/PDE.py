@@ -3,7 +3,7 @@ import sympy as sm
 import numpy as np
 
 
-sympyTorchmodules = {'sin': torch.sin, 'cos': torch.cos}
+sympyTorchmodules = {'tan': torch.tan,'sin': torch.sin, 'cos': torch.cos, 'exp':torch.exp}
 
 class Poisson1D:
 
